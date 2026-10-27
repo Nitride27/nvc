@@ -15,9 +15,16 @@ Leader is `\`, so Space never waits on a shortcut.
 | `Alt+h/j/k/l` | Move between panes (works in every mode) |
 | `Ctrl+V` | Paste system clipboard (in the Claude pane: text or image, whichever was copied) |
 | `Alt+V` | In the Claude pane: paste image (toggles the tree everywhere else) |
-| `\w` / `\q` | Save / quit window |
+| `\w` / `\q` / `Ctrl+S` | Save / quit window / save |
+| `Alt+f` | Open folder: recent, `D:/Codes`, browse anywhere, new folder / file, or type any path |
+| `Alt+n` / `Alt+Shift+n` | New file / folder |
+| `Ctrl+P` | Go to file |
+| `\gs` `\gd` `\gl` `\gb` `\go` | Git: changed files, changed lines, file history, blame line, open on GitHub |
+| `\x` / `\ls` / `\u` | Problems / symbols / undo history |
 
 Press `\` and wait to see the rest (which-key).
+
+Each folder remembers its open files and reopens them. Files save themselves when you leave them or switch away from Neovim, so Claude always reads what you see.
 
 ## Plugins
 
