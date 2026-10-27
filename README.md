@@ -1,4 +1,4 @@
-# nvim-config
+# nvc
 
 A single-file Neovim setup laid out like an AI IDE: file tree on the left, editor in the middle, and Claude Code / opencode on the right. It also edits Jupyter notebooks inline. Built on Windows + WezTerm; a matching Ghostty config is included.
 
@@ -40,9 +40,9 @@ Back up your current config, then clone:
 
 ```sh
 # Windows
-git clone https://github.com/Nitride27/nvim-config "$env:LOCALAPPDATA\nvim"
+git clone https://github.com/Nitride27/nvc "$env:LOCALAPPDATA\nvim"
 # macOS / Linux
-git clone https://github.com/Nitride27/nvim-config ~/.config/nvim
+git clone https://github.com/Nitride27/nvc ~/.config/nvim
 ```
 
 Start `nvim`; plugins install on first launch.
