@@ -1,0 +1,16 @@
+# Same setup as terminal/wezterm/.wezterm.lua, for macOS / Linux.
+# Install: ~/.config/ghostty/config
+
+font-family = JetBrainsMono Nerd Font
+font-size = 11
+theme = Black Metal
+# Bytes, not lines: roughly WezTerm's 50k lines.
+scrollback-limit = 50000000
+window-padding-x = 12
+window-padding-y = 10,6
+
+# The nvc layout (40-col tree + editor + 40% Claude) is cramped at the default size.
+maximize = true
+
+# Alt+h/j/k/l move between Neovim panes; on macOS Option must send Alt for that.
+macos-option-as-alt = true

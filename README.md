@@ -1,6 +1,6 @@
 # nvim-config
 
-A single-file Neovim setup laid out like an AI IDE: file tree on the left, editor in the middle, and Claude Code / opencode on the right. It also edits Jupyter notebooks inline. Built on Windows + Ghostty.
+A single-file Neovim setup laid out like an AI IDE: file tree on the left, editor in the middle, and Claude Code / opencode on the right. It also edits Jupyter notebooks inline. Built on Windows + WezTerm; a matching Ghostty config is included.
 
 ## Layout and keys
 
@@ -29,7 +29,7 @@ lazy.nvim (bootstraps itself), snacks.nvim (explorer, terminals, inline images),
 - git
 - [Claude Code](https://claude.com/claude-code) (`claude` on PATH) for the Claude pane
 - [opencode](https://opencode.ai) at `~/.opencode/bin/opencode` (optional)
-- [Ghostty](https://ghostty.org) or another terminal with the kitty graphics protocol, for inline notebook plots (optional)
+- [WezTerm](https://wezterm.org), [Ghostty](https://ghostty.org) or another terminal with the kitty graphics protocol, for inline notebook plots (optional)
 - [uv](https://docs.astral.sh/uv/) and `jupytext` for notebooks (optional)
 
 Paths assume Windows (`Scripts/python.exe` in venvs). On macOS/Linux the notebook parts need those paths changed to `bin/python`.
@@ -46,6 +46,13 @@ git clone https://github.com/Nitride27/nvim-config ~/.config/nvim
 ```
 
 Start `nvim`; plugins install on first launch.
+
+## Terminal
+
+Configs for the terminal it runs in are in `terminal/`. Both use JetBrainsMono Nerd Font, the Black Metal theme and kitty graphics (for inline plots), and leave Alt+h/j/k/l free for Neovim.
+
+- **WezTerm** (Windows): copy `terminal/wezterm/.wezterm.lua` to `~/.wezterm.lua` and `terminal/wezterm/nitride.ps1` to `~/.config/wezterm/nitride.ps1` (the banner shown in each new pane; delete the `default_prog` line to skip it).
+- **Ghostty** (macOS / Linux): copy `terminal/ghostty/config` to `~/.config/ghostty/config`.
 
 ## License
 
