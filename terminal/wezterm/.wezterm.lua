@@ -9,7 +9,7 @@ wezterm.on("gui-startup", function(cmd)
 end)
 
 -- -NoExit keeps the shell open after printing the NITRIDE banner.
-c.default_prog = { "powershell.exe", "-NoLogo", "-NoExit", "-File", wezterm.home_dir .. "/.config/wezterm/nitride.ps1" }
+c.default_prog = { "powershell.exe", "-NoLogo", "-NoExit", "-File", wezterm.config_dir .. "/nitride.ps1" }
 c.font = wezterm.font("JetBrainsMono Nerd Font")
 -- Default 12pt zoomed out one step (Ctrl+-), measured as a 13x29px cell at 144 dpi.
 c.font_size = 12 / 1.1

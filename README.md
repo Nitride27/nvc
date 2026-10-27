@@ -51,7 +51,10 @@ Start `nvim`; plugins install on first launch.
 
 Configs for the terminal it runs in are in `terminal/`. Both use JetBrainsMono Nerd Font, the Black Metal theme and kitty graphics (for inline plots), and leave Alt+h/j/k/l free for Neovim.
 
-- **WezTerm** (Windows): copy `terminal/wezterm/.wezterm.lua` to `~/.wezterm.lua` and `terminal/wezterm/nitride.ps1` to `~/.config/wezterm/nitride.ps1` (the banner shown in each new pane; delete the `default_prog` line to skip it).
+- **WezTerm** (Windows): point WezTerm at the repo so it stays in sync. `nitride.ps1` is the banner shown in each new pane; delete the `default_prog` line to skip it.
+  ```powershell
+  [Environment]::SetEnvironmentVariable("WEZTERM_CONFIG_FILE", "$env:LOCALAPPDATA\nvim\terminal\wezterm\.wezterm.lua", "User")
+  ```
 - **Ghostty** (macOS / Linux): copy `terminal/ghostty/config` to `~/.config/ghostty/config`.
 
 ## License
