@@ -1,0 +1,51 @@
+# nvim-config
+
+A single-file Neovim setup laid out like an AI IDE: file tree on the left, editor in the middle, and Claude Code / opencode on the right. It also edits Jupyter notebooks inline. Built on Windows + Ghostty.
+
+## Layout and keys
+
+Leader is `\`, so Space never waits on a shortcut.
+
+| Key | Action |
+|-----|--------|
+| `Alt+v` | Show / hide file tree |
+| `Alt+e` | Show / hide editor |
+| `Alt+c` | Show / hide Claude |
+| `Alt+o` | Show / hide opencode |
+| `Alt+h/j/k/l` | Move between panes (works in every mode) |
+| `Ctrl+V` | Paste system clipboard |
+| `\w` / `\q` | Save / quit window |
+
+Press `\` and wait to see the rest (which-key).
+
+## Plugins
+
+lazy.nvim (bootstraps itself), snacks.nvim (explorer, terminals, inline images), claudecode.nvim, bufferline, which-key, base16 (Black Metal theme), nvim-lspconfig + mason (pyright, ts_ls, lua_ls), render-markdown, and jupytext + molten for notebooks. Versions are pinned in `lazy-lock.json`.
+
+## Requirements
+
+- Neovim 0.11+
+- git
+- [Claude Code](https://claude.com/claude-code) (`claude` on PATH) for the Claude pane
+- [opencode](https://opencode.ai) at `~/.opencode/bin/opencode` (optional)
+- [Ghostty](https://ghostty.org) or another terminal with the kitty graphics protocol, for inline notebook plots (optional)
+- [uv](https://docs.astral.sh/uv/) and `jupytext` for notebooks (optional)
+
+Paths assume Windows (`Scripts/python.exe` in venvs). On macOS/Linux the notebook parts need those paths changed to `bin/python`.
+
+## Install
+
+Back up your current config, then clone:
+
+```sh
+# Windows
+git clone https://github.com/Nitride27/nvim-config "$env:LOCALAPPDATA\nvim"
+# macOS / Linux
+git clone https://github.com/Nitride27/nvim-config ~/.config/nvim
+```
+
+Start `nvim`; plugins install on first launch.
+
+## License
+
+MIT
