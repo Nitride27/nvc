@@ -65,8 +65,35 @@ vim.api.nvim_create_autocmd("TermOpen", {
   end,
 })
 
+-- Unused remote-plugin hosts: skip probing for them at startup (Python stays for molten).
+vim.g.loaded_perl_provider = 0
+vim.g.loaded_ruby_provider = 0
+vim.g.loaded_node_provider = 0
+
 vim.keymap.set("n", "<Esc>", "<cmd>nohlsearch<cr>")
 vim.keymap.set("n", "<leader>w", "<cmd>write<cr>", { desc = "Save" })
+vim.keymap.set({ "n", "i" }, "<C-s>", "<cmd>write<cr>", { desc = "Save" })
+vim.api.nvim_create_autocmd("TextYankPost", { callback = function() vim.hl.on_yank() end })
+
+-- Reopen a file where you left it.
+vim.api.nvim_create_autocmd("BufReadPost", {
+  callback = function(ev)
+    if vim.bo[ev.buf].filetype == "gitcommit" then return end
+    local mark = vim.api.nvim_buf_get_mark(ev.buf, '"')
+    if mark[1] > 0 and mark[1] <= vim.api.nvim_buf_line_count(ev.buf) then pcall(vim.api.nvim_win_set_cursor, 0, mark) end
+  end,
+})
+
+-- Unsaved edits are saved when you leave the file or Neovim, so Claude / opencode always read what you see
+-- (and never overwrite edits you hadn't saved yet).
+vim.api.nvim_create_autocmd({ "BufLeave", "FocusLost" }, {
+  callback = function(ev)
+    local bo = vim.bo[ev.buf]
+    if bo.buftype == "" and bo.modified and bo.modifiable and not bo.readonly and vim.api.nvim_buf_get_name(ev.buf) ~= "" then
+      vim.api.nvim_buf_call(ev.buf, function() vim.cmd("silent! update") end)
+    end
+  end,
+})
 vim.keymap.set("n", "<leader>q", "<cmd>quit<cr>", { desc = "Quit window" })
 
 -- Layout: file tree (left) · editor (middle, can be closed) · Claude / opencode (right).
@@ -163,7 +190,14 @@ local function toggle_editor()
 end
 
 local function toggle_tree() Snacks.explorer() end
-local function toggle_claude() vim.cmd("ClaudeCode") end
+-- The Claude bridge isn't started at launch (so `nvim` as $EDITOR stays light); start it on first use.
+local function ensure_claude_bridge()
+  if not require("claudecode").state.server then vim.cmd("ClaudeCodeStart") end
+end
+local function toggle_claude()
+  ensure_claude_bridge()
+  vim.cmd("ClaudeCode")
+end
 local function toggle_opencode()
   -- Stacks under Claude in the same column; drag the bar between them to change their heights.
   Snacks.terminal.toggle(vim.fs.normalize("~/.opencode/bin/opencode"), { win = { position = "right", wo = { winbar = "" } } })
@@ -232,9 +266,13 @@ vim.api.nvim_create_autocmd({ "FocusGained", "TermLeave", "BufEnter", "BufWriteP
 
 -- Edits that happen while you sit in another pane (Claude writing files) fire none of the events
 -- above, so `git status` is polled every 2 s and the tree / open files refresh when it changes.
-local last_status
-vim.uv.new_timer():start(2000, 2000, function()
-  vim.system({ "git", "status", "--porcelain" }, { cwd = vim.uv.cwd(), text = true }, function(r)
+-- Only in the IDE layout, only inside a git repo, and paused while Neovim is in the background
+-- (FocusGained refreshes anyway). --no-optional-locks keeps it from fighting Claude's git over index.lock.
+local last_status, poll_timer
+local function poll()
+  local cwd = vim.uv.cwd()
+  if not vim.fs.root(cwd, ".git") then return end
+  vim.system({ "git", "--no-optional-locks", "status", "--porcelain" }, { cwd = cwd, text = true }, function(r)
     if r.code ~= 0 or r.stdout == last_status then return end
     local first = last_status == nil
     last_status = r.stdout
@@ -244,7 +282,15 @@ vim.uv.new_timer():start(2000, 2000, function()
       refresh_tree()
     end)
   end)
-end)
+end
+local function start_polling()
+  if poll_timer then return end
+  poll_timer = vim.uv.new_timer()
+  poll_timer:start(2000, 2000, poll)
+  vim.api.nvim_create_autocmd("FocusLost", { callback = function() poll_timer:stop() end })
+  vim.api.nvim_create_autocmd("FocusGained", { callback = function() poll_timer:again() end })
+end
+vim.api.nvim_create_autocmd("DirChanged", { callback = function() last_status = nil end })
 
 -- New file / folder anywhere, like VS Code: Alt+n / Alt+Shift+n, :NewFile / :NewFolder, or right-click.
 -- The prompt starts in the folder under the tree cursor (else the current file's folder) and takes any
@@ -296,17 +342,54 @@ for key, fn in pairs({ c = toggle_claude, e = toggle_editor, v = toggle_tree, o 
   end)
 end
 
-local function start_workspace()
+-- Per-folder sessions: the files open in a folder come back the next time you open it.
+local SESSIONS = vim.fn.stdpath("state") .. "/sessions"
+local function session_file(dir) return SESSIONS .. "/" .. vim.fs.normalize(dir):lower():gsub("[^%w]+", "_") end
+
+local function save_session()
+  local cwd = vim.fs.normalize(vim.fn.getcwd())
+  local cur_buf = last_editor_buf and vim.api.nvim_buf_is_valid(last_editor_buf) and last_editor_buf or 0
+  local files, current = {}, vim.fs.normalize(vim.api.nvim_buf_get_name(cur_buf))
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.fs.normalize(vim.api.nvim_buf_get_name(buf))
+    if vim.bo[buf].buflisted and vim.bo[buf].buftype == "" and name ~= current
+      and vim.startswith(name:lower(), cwd:lower() .. "/") and vim.uv.fs_stat(name) then
+      files[#files + 1] = name
+    end
+  end
+  if vim.startswith(current:lower(), cwd:lower() .. "/") and vim.uv.fs_stat(current) then files[#files + 1] = current end
+  if #files == 0 then return end -- keep the old session rather than wiping it with nothing
+  vim.fn.mkdir(SESSIONS, "p")
+  vim.fn.writefile(files, session_file(cwd))
+end
+
+-- The last file in the list was the one you were on.
+local function restore_session()
+  local f = session_file(vim.fn.getcwd())
+  if vim.fn.filereadable(f) == 0 then return end
+  local files = vim.tbl_filter(function(p) return vim.uv.fs_stat(p) ~= nil end, vim.fn.readfile(f))
+  if #files == 0 then return end
+  vim.api.nvim_set_current_win(ensure_editor())
+  for _, p in ipairs(files) do vim.cmd.badd(vim.fn.fnameescape(p)) end
+  vim.cmd.edit(vim.fn.fnameescape(files[#files]))
+end
+
+local function start_workspace(restore)
+  start_polling()
+  if restore then restore_session() end
   Snacks.explorer()
-  vim.cmd("ClaudeCode")
+  toggle_claude()
   local win = editor_wins()[1]
   if win then vim.api.nvim_set_current_win(win) end
 end
+
+vim.api.nvim_create_autocmd("VimLeavePre", { callback = function() if poll_timer then save_session() end end })
 
 -- Switch the whole workspace, like VS Code's Open Folder: tree, Claude and opencode restart in `dir`.
 local function open_folder(dir)
   dir = vim.fn.fnamemodify(vim.fn.expand(dir), ":p"):gsub("[/\\]$", "")
   if vim.fn.isdirectory(dir) == 0 then return vim.notify("Not a folder: " .. dir, vim.log.levels.ERROR) end
+  if poll_timer then save_session() end
   for _, p in ipairs(Snacks.picker.get({ source = "explorer" })) do p:close() end
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.bo[buf].buftype == "terminal" then
@@ -314,10 +397,16 @@ local function open_folder(dir)
       pcall(vim.api.nvim_buf_delete, buf, { force = true })
     end
   end
+  -- Close the old project's unchanged files, like VS Code does, so their language servers can shut down.
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.fs.normalize(vim.api.nvim_buf_get_name(buf))
+    if vim.bo[buf].buftype == "" and not vim.bo[buf].modified and not vim.startswith(name:lower(), vim.fs.normalize(dir):lower() .. "/") then
+      pcall(vim.api.nvim_buf_delete, buf, {})
+    end
+  end
   vim.cmd.cd(dir)
-  vim.cmd("ClaudeCodeStop") -- restart the IDE bridge so it advertises the new folder to Claude
-  vim.cmd("ClaudeCodeStart")
-  start_workspace()
+  if require("claudecode").state.server then vim.cmd("ClaudeCodeStop") end -- restart it so it advertises the new folder
+  start_workspace(true)
   vim.notify("Opened " .. dir)
 end
 
@@ -337,8 +426,50 @@ vim.api.nvim_create_autocmd("DirChanged", {
   end,
 })
 
+-- Asks for a path (Tab completes, any drive works) and hands it to `fn`.
+local function ask_path(prompt, default, completion, fn)
+  Snacks.input({ prompt = prompt, default = default, completion = completion }, function(value)
+    value = vim.trim(value or "")
+    if value ~= "" then fn(vim.fs.normalize(vim.fn.fnamemodify(vim.fn.expand(value), ":p"))) end
+  end)
+end
+
+-- Opens `dir` as the workspace, offering to create it first if it doesn't exist.
+local function open_or_create_folder(dir)
+  dir = dir:gsub("/$", "")
+  if vim.fn.isdirectory(dir) == 0 then
+    if vim.fn.filereadable(dir) == 1 then return vim.notify("That's a file: " .. dir, vim.log.levels.ERROR) end
+    if vim.fn.confirm("Create " .. dir .. "?", "&Yes\n&No") ~= 1 then return end
+    vim.fn.mkdir(dir, "p")
+  end
+  open_folder(dir)
+end
+
+local function pick_actions()
+  local home = vim.fs.normalize(vim.env.HOME)
+  return {
+    { text = "Browse any folder…", action = function()
+      ask_path("Open folder", vim.fs.normalize(vim.fn.getcwd()) .. "/", "dir", open_or_create_folder)
+    end },
+    { text = "New folder…", action = function()
+      ask_path("New folder", PROJECTS_DIR .. "/", "dir", open_or_create_folder)
+    end },
+    { text = "New file…", action = function()
+      ask_path("New file", PROJECTS_DIR .. "/", "file", function(path)
+        if vim.fn.isdirectory(path) == 1 then return open_folder(path) end
+        vim.fn.mkdir(vim.fs.dirname(path), "p")
+        if not vim.uv.fs_stat(path) then vim.fn.writefile({}, path) end
+        open_folder(vim.fs.dirname(path))
+        vim.api.nvim_set_current_win(ensure_editor())
+        vim.cmd.edit(vim.fn.fnameescape(path))
+      end)
+    end },
+    { text = "Home (" .. home .. ")", action = function() open_folder(home) end },
+  }
+end
+
 local function pick_folder()
-  local items, seen = {}, {}
+  local items, seen = pick_actions(), {}
   local function add(dir)
     if not seen[dir] and vim.fn.isdirectory(dir) == 1 then
       seen[dir] = true
@@ -353,14 +484,24 @@ local function pick_folder()
   table.sort(subdirs, function(a, b) return a:lower() < b:lower() end)
   for _, d in ipairs(subdirs) do add(d) end
   Snacks.picker.pick({
-    title = "Open folder",
+    title = "Open folder  (or type any path and press Enter)",
     items = items,
-    format = "file",
+    format = function(item, picker)
+      if item.action then return { { "  " .. item.text, "Special" } } end
+      return Snacks.picker.format.file(item, picker)
+    end,
     preview = "none",
     layout = { preset = "select" },
     confirm = function(picker, item)
+      local typed = vim.trim(picker.input:get())
       picker:close()
-      if item then open_folder(item.file) end
+      -- A typed path that matches nothing in the list (e.g. E:/stuff, ~/notes) opens or creates that folder.
+      if not item and typed ~= "" then
+        return open_or_create_folder(vim.fs.normalize(vim.fn.fnamemodify(vim.fn.expand(typed), ":p")))
+      end
+      if not item then return end
+      if item.action then return vim.schedule(item.action) end
+      open_folder(item.file)
     end,
   })
 end
@@ -377,7 +518,7 @@ end, { desc = "Open folder" })
 -- In $HOME, choose a project first instead of starting Claude in the home folder.
 vim.api.nvim_create_user_command("IDE", function()
   if vim.fn.getcwd() == vim.env.HOME then return pick_folder() end
-  start_workspace()
+  start_workspace(vim.fn.argc() == 0) -- `nvc file.py` opens just that file; plain `nvc` brings back the last files
 end, { desc = "Open tree + editor + Claude" })
 
 -- VS Code's git colours for file names in the tree (the theme's defaults are near-invisible on black).
@@ -452,6 +593,17 @@ require("lazy").setup({
       { "<leader>fb", function() Snacks.picker.buffers() end, desc = "Buffers" },
       { "<leader>fr", function() Snacks.picker.recent() end, desc = "Recent files" },
       { "<leader>v", toggle_tree, desc = "Show / hide tree" },
+      { "<C-p>", function() Snacks.picker.smart() end, desc = "Go to file" },
+      { "<leader>g", nil, desc = "Git" },
+      { "<leader>gs", function() Snacks.picker.git_status() end, desc = "Changed files" },
+      { "<leader>gd", function() Snacks.picker.git_diff() end, desc = "Changed lines (hunks)" },
+      { "<leader>gl", function() Snacks.picker.git_log_file() end, desc = "History of this file" },
+      { "<leader>gb", function() Snacks.git.blame_line() end, desc = "Blame this line" },
+      { "<leader>go", function() Snacks.gitbrowse() end, desc = "Open on GitHub" },
+      { "<leader>x", function() Snacks.picker.diagnostics() end, desc = "Problems (all files)" },
+      { "<leader>ls", function() Snacks.picker.lsp_symbols() end, desc = "Symbols in file" },
+      { "<leader>lS", function() Snacks.picker.lsp_workspace_symbols() end, desc = "Symbols in project" },
+      { "<leader>u", function() Snacks.picker.undo() end, desc = "Undo history" },
     },
   },
   {
@@ -460,14 +612,16 @@ require("lazy").setup({
     lazy = false,
     opts = {
       terminal_cmd = vim.fs.normalize("~/.local/bin/claude.exe"), -- forward slashes: the cmd string is shell-split
+      auto_start = false, -- started by the IDE layout / Alt+c, not by every `nvim` (git commit, $EDITOR)
+      log_level = "warn", -- no "integration stopped" line printed on quit
       terminal = { split_side = "right", split_width_percentage = AI_WIDTH, snacks_win_opts = { wo = { winbar = "" } } },
     },
     keys = {
       { "<leader>a", nil, desc = "Claude" },
       { "<leader>c", toggle_claude, desc = "Show / hide Claude" },
-      { "<leader>af", "<cmd>ClaudeCodeFocus<cr>", desc = "Focus Claude" },
-      { "<leader>ar", "<cmd>ClaudeCode --resume<cr>", desc = "Resume a session" },
-      { "<leader>aC", "<cmd>ClaudeCode --continue<cr>", desc = "Continue last session" },
+      { "<leader>af", function() ensure_claude_bridge() vim.cmd("ClaudeCodeFocus") end, desc = "Focus Claude" },
+      { "<leader>ar", function() ensure_claude_bridge() vim.cmd("ClaudeCode --resume") end, desc = "Resume a session" },
+      { "<leader>aC", function() ensure_claude_bridge() vim.cmd("ClaudeCode --continue") end, desc = "Continue last session" },
       { "<leader>am", "<cmd>ClaudeCodeSelectModel<cr>", desc = "Select model" },
       { "<leader>ab", "<cmd>ClaudeCodeAdd %<cr>", desc = "Add current file" },
       { "<leader>as", "<cmd>ClaudeCodeSend<cr>", mode = "v", desc = "Send selection" },
@@ -526,14 +680,21 @@ require("lazy").setup({
       })
     end,
   },
-  { "neovim/nvim-lspconfig" },
-  { "mason-org/mason.nvim", opts = {} },
+  { "neovim/nvim-lspconfig", lazy = true },
+  { "mason-org/mason.nvim", cmd = "Mason", opts = {} },
   {
+    -- Loaded with the first file, so the tree / Claude / picker never wait on LSP setup.
     "mason-org/mason-lspconfig.nvim",
+    event = { "BufReadPre", "BufNewFile" },
     dependencies = { "mason-org/mason.nvim", "neovim/nvim-lspconfig" },
     opts = { ensure_installed = { "pyright", "ts_ls", "lua_ls" } },
   },
-}, { rocks = { enabled = false }, change_detection = { notify = false } })
+}, {
+  rocks = { enabled = false },
+  change_detection = { notify = false },
+  -- Built-in plugins this setup never uses (Snacks' explorer replaces netrw).
+  performance = { rtp = { disabled_plugins = { "gzip", "tarPlugin", "zipPlugin", "tohtml", "tutor", "netrwPlugin" } } },
+})
 
 vim.lsp.config("lua_ls", { settings = { Lua = { diagnostics = { globals = { "vim", "Snacks" } } } } })
 vim.diagnostic.config({ virtual_text = true, severity_sort = true })
