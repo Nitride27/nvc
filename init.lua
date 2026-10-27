@@ -28,16 +28,39 @@ for _, dir in ipairs({ "h", "j", "k", "l" }) do
   vim.keymap.set({ "i", "t" }, "<A-" .. dir .. ">", "<C-\\><C-n><C-w>" .. dir)
 end
 -- Ghostty's Ctrl+Shift+V can paste a stale copy, so Ctrl+V reads the system clipboard directly.
--- Claude's pane keeps its own Ctrl+V (it already reads the clipboard, and handles images).
+-- In Claude's pane Ctrl+V pastes whatever was copied, text or image.
 local function paste_clipboard()
   local text = vim.fn.getreg("+")
   if text ~= "" then vim.api.nvim_paste(text, true, -1) end
+end
+
+-- The first text or image format on the clipboard is what was copied (apps list their main format first).
+local function clipboard_is_image()
+  if jit.os ~= "Windows" then return vim.fn.getreg("+") == "" end
+  local ffi = require("ffi")
+  pcall(ffi.cdef, "int OpenClipboard(void*); int CloseClipboard(void); unsigned int EnumClipboardFormats(unsigned int);")
+  local user32 = ffi.load("user32")
+  if user32.OpenClipboard(nil) == 0 then return false end
+  local f, image = user32.EnumClipboardFormats(0), false
+  while f ~= 0 do
+    if f == 1 or f == 13 then break end -- CF_TEXT, CF_UNICODETEXT
+    if f == 2 or f == 8 or f == 17 then image = true break end -- CF_BITMAP, CF_DIB, CF_DIBV5
+    f = user32.EnumClipboardFormats(f)
+  end
+  user32.CloseClipboard()
+  return image
 end
 vim.keymap.set({ "n", "i", "c" }, "<C-v>", paste_clipboard, { desc = "Paste system clipboard" })
 vim.api.nvim_create_autocmd("TermOpen", {
   callback = function(ev)
     if not vim.api.nvim_buf_get_name(ev.buf):match("claude") then
       vim.keymap.set("t", "<C-v>", paste_clipboard, { buffer = ev.buf, desc = "Paste system clipboard" })
+    else
+      -- Alt+V (sent as Esc v) is Claude's image paste on Windows; Ctrl+V is its text paste.
+      local function send(keys) vim.fn.chansend(vim.b[ev.buf].terminal_job_id, keys) end
+      vim.keymap.set("t", "<C-v>", function() send(clipboard_is_image() and "\27v" or "\22") end,
+        { buffer = ev.buf, desc = "Paste text or image into Claude" })
+      vim.keymap.set("t", "<A-v>", function() send("\27v") end, { buffer = ev.buf, desc = "Paste image into Claude" })
     end
   end,
 })

@@ -13,7 +13,8 @@ Leader is `\`, so Space never waits on a shortcut.
 | `Alt+c` | Show / hide Claude |
 | `Alt+o` | Show / hide opencode |
 | `Alt+h/j/k/l` | Move between panes (works in every mode) |
-| `Ctrl+V` | Paste system clipboard |
+| `Ctrl+V` | Paste system clipboard (in the Claude pane: text or image, whichever was copied) |
+| `Alt+V` | In the Claude pane: paste image (toggles the tree everywhere else) |
 | `\w` / `\q` | Save / quit window |
 
 Press `\` and wait to see the rest (which-key).
