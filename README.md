@@ -38,6 +38,7 @@ lazy.nvim (bootstraps itself), snacks.nvim (explorer, terminals, inline images),
 - [opencode](https://opencode.ai) at `~/.opencode/bin/opencode` (optional)
 - [WezTerm](https://wezterm.org), [Ghostty](https://ghostty.org) or another terminal with the kitty graphics protocol, for inline notebook plots (optional)
 - [uv](https://docs.astral.sh/uv/) and `jupytext` for notebooks (optional)
+- [Zig](https://ziglang.org) (`winget install zig.zig`) to build the Python / Dart treesitter parsers on first use (optional; without it those files use regex highlighting)
 
 Paths assume Windows (`Scripts/python.exe` in venvs). On macOS/Linux the notebook parts need those paths changed to `bin/python`.
 

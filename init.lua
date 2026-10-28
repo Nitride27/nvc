@@ -680,6 +680,8 @@ require("lazy").setup({
       })
     end,
   },
+  -- Never loaded: only its pinned grammar versions and highlight queries are used (see TS_LANGS below).
+  { "nvim-treesitter/nvim-treesitter", branch = "main", lazy = true },
   { "neovim/nvim-lspconfig", lazy = true },
   { "mason-org/mason.nvim", cmd = "Mason", opts = {} },
   {
@@ -695,6 +697,80 @@ require("lazy").setup({
   -- Built-in plugins this setup never uses (Snacks' explorer replaces netrw).
   performance = { rtp = { disabled_plugins = { "gzip", "tarPlugin", "zipPlugin", "tohtml", "tutor", "netrwPlugin" } } },
 })
+
+-- Treesitter highlighting for languages Neovim doesn't ship a parser for. nvim-treesitter supplies the pinned
+-- grammar version and highlight queries; the parser is compiled with Zig (winget install zig.zig) the first
+-- time a file of that language opens. :TSBuild <lang> rebuilds it (restart first: Windows locks a loaded parser).
+local TS_LANGS = { "python", "dart" }
+local TS_SITE = vim.fn.stdpath("data") .. "/site"
+vim.opt.rtp:prepend(TS_SITE)
+local ts_building = {}
+
+local function ts_build(lang, on_done)
+  if ts_building[lang] then return end
+  if vim.fn.executable("zig") == 0 then
+    return vim.notify("Install Zig (winget install zig.zig) to build the " .. lang .. " parser", vim.log.levels.WARN)
+  end
+  local ts_dir = require("lazy.core.config").plugins["nvim-treesitter"].dir
+  local info = dofile(ts_dir .. "/lua/nvim-treesitter/parsers.lua")[lang].install_info
+  local src = vim.fn.stdpath("cache") .. "/tree-sitter-" .. lang
+  local root = src .. (info.location and "/" .. info.location or "")
+  ts_building[lang] = true
+  vim.fn.delete(src, "rf")
+  vim.fn.mkdir(src, "p")
+  vim.notify("Building the " .. lang .. " treesitter parser…")
+  local function fail(msg)
+    ts_building[lang] = nil
+    vim.notify("Treesitter " .. lang .. ": " .. msg, vim.log.levels.ERROR)
+  end
+  local steps = {
+    function() return { "git", "init", "-q" } end,
+    function() return { "git", "fetch", "-q", "--depth", "1", info.url, info.revision } end,
+    function() return { "git", "checkout", "-q", "FETCH_HEAD" } end,
+    function()
+      -- Built inside the clone so zig's .lib / .pdb side files never land next to the parser.
+      local cmd = { "zig", "cc", "-shared", "-O2", "-I", root .. "/src", "-o", root .. "/parser.dll", root .. "/src/parser.c" }
+      if vim.uv.fs_stat(root .. "/src/scanner.c") then cmd[#cmd + 1] = root .. "/src/scanner.c" end
+      return cmd
+    end,
+  }
+  local function run(i)
+    if i > #steps then
+      vim.fn.mkdir(TS_SITE .. "/parser", "p")
+      local ok, err = vim.uv.fs_copyfile(root .. "/parser.dll", TS_SITE .. "/parser/" .. lang .. ".dll")
+      if not ok then return fail(err) end
+      local qdst = TS_SITE .. "/queries/" .. lang
+      vim.fn.mkdir(qdst, "p")
+      for name in vim.fs.dir(ts_dir .. "/runtime/queries/" .. lang) do
+        vim.uv.fs_copyfile(ts_dir .. "/runtime/queries/" .. lang .. "/" .. name, qdst .. "/" .. name)
+      end
+      ts_building[lang] = nil
+      vim.notify("Treesitter " .. lang .. " parser ready")
+      return on_done and on_done()
+    end
+    vim.system(steps[i](), { cwd = src }, vim.schedule_wrap(function(r)
+      if r.code ~= 0 then return fail(r.stderr) end
+      run(i + 1)
+    end))
+  end
+  run(1)
+end
+
+local function ts_start_all(lang)
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(buf) and vim.bo[buf].filetype == lang then pcall(vim.treesitter.start, buf, lang) end
+  end
+end
+
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = TS_LANGS,
+  callback = function(ev)
+    if not pcall(vim.treesitter.start, ev.buf, ev.match) then ts_build(ev.match, function() ts_start_all(ev.match) end) end
+  end,
+})
+vim.api.nvim_create_user_command("TSBuild", function(cmd)
+  ts_build(cmd.args, function() ts_start_all(cmd.args) end)
+end, { nargs = 1, complete = function() return TS_LANGS end, desc = "Build a treesitter parser with Zig" })
 
 vim.lsp.config("lua_ls", { settings = { Lua = { diagnostics = { globals = { "vim", "Snacks" } } } } })
 vim.diagnostic.config({ virtual_text = true, severity_sort = true })
