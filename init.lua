@@ -51,9 +51,16 @@ local function clipboard_is_image()
   return image
 end
 vim.keymap.set({ "n", "i", "c" }, "<C-v>", paste_clipboard, { desc = "Paste system clipboard" })
+
+-- A terminal's command, from its "term://{cwd}//{pid}:{cmd}" name (the cwd alone could contain "claude").
+local function term_cmd(buf) return (vim.api.nvim_buf_get_name(buf):match("//%d+:(.*)$") or ""):lower() end
+local function is_ai_term(buf)
+  return vim.bo[buf].buftype == "terminal" and (term_cmd(buf):find("claude") or term_cmd(buf):find("opencode")) ~= nil
+end
+
 vim.api.nvim_create_autocmd("TermOpen", {
   callback = function(ev)
-    if not vim.api.nvim_buf_get_name(ev.buf):match("claude") then
+    if not term_cmd(ev.buf):find("claude") then
       vim.keymap.set("t", "<C-v>", paste_clipboard, { buffer = ev.buf, desc = "Paste system clipboard" })
     else
       -- Alt+V (sent as Esc v) is Claude's image paste on Windows; Ctrl+V is its text paste.
@@ -117,7 +124,7 @@ vim.api.nvim_create_autocmd("BufEnter", {
 
 -- Widths you set by dragging a border with the mouse are remembered per pane and reused on every toggle.
 local tree_width, ai_widths = TREE_WIDTH, {}
-local function ai_kind(buf) return vim.api.nvim_buf_get_name(buf):match("opencode") and "opencode" or "claude" end
+local function ai_kind(buf) return term_cmd(buf):find("opencode") and "opencode" or "claude" end
 -- Only resizes right after a mouse event count as yours; automatic ones (a pane closing) are ignored.
 local last_mouse = 0
 vim.on_key(function(_, typed)
@@ -132,7 +139,7 @@ vim.api.nvim_create_autocmd("WinResized", {
       if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_config(win).relative == "" then
         if vim.w[win].snacks_layout then
           tree_width = vim.api.nvim_win_get_width(win)
-        elseif vim.bo[vim.api.nvim_win_get_buf(win)].buftype == "terminal" then
+        elseif is_ai_term(vim.api.nvim_win_get_buf(win)) then
           ai_widths[ai_kind(vim.api.nvim_win_get_buf(win))] = vim.api.nvim_win_get_width(win)
         end
       end
@@ -144,7 +151,7 @@ vim.api.nvim_create_autocmd("WinResized", {
 -- or takes all remaining space without one.
 local function fix_widths(has_editor)
   local wins = vim.tbl_filter(function(w) return vim.api.nvim_win_get_config(w).relative == "" end, vim.api.nvim_tabpage_list_wins(0))
-  local ai = vim.tbl_filter(function(w) return vim.bo[vim.api.nvim_win_get_buf(w)].buftype == "terminal" end, wins)
+  local ai = vim.tbl_filter(function(w) return is_ai_term(vim.api.nvim_win_get_buf(w)) end, wins)
   for _, win in ipairs(wins) do
     if vim.w[win].snacks_layout then vim.api.nvim_win_set_width(win, tree_width) end
   end
@@ -203,15 +210,22 @@ local function toggle_opencode()
   Snacks.terminal.toggle(vim.fs.normalize("~/.opencode/bin/opencode"), { win = { position = "right", wo = { winbar = "" } } })
   vim.schedule(function() fix_widths(#editor_wins() > 0) end)
 end
+-- A PowerShell under the editor (not across the tree / Claude), started in the project folder.
+local function toggle_shell()
+  Snacks.terminal.toggle("powershell.exe -NoLogo", {
+    cwd = vim.fn.getcwd(),
+    win = { position = "bottom", relative = "win", win = ensure_editor(), height = 0.3, wo = { winbar = "" } },
+  })
+end
 
--- Claude / opencode: no title bar on top, just a named status bar at the bottom. That status bar is the
--- border you drag to change their heights (Neovim can't resize from a title bar).
+-- Claude / opencode / shell: no title bar on top, just a named status bar at the bottom. That status bar
+-- is the border you drag to change their heights (Neovim can't resize from a title bar).
 vim.api.nvim_create_autocmd({ "TermOpen", "BufWinEnter", "WinEnter" }, {
   callback = function()
     for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
       local buf = vim.api.nvim_win_get_buf(win)
       if vim.bo[buf].buftype == "terminal" and vim.api.nvim_win_get_config(win).relative == "" then
-        local name = vim.api.nvim_buf_get_name(buf):match("opencode") and "opencode" or "Claude"
+        local name = not is_ai_term(buf) and "Shell" or ai_kind(buf) == "opencode" and "opencode" or "Claude"
         vim.wo[win].winbar = ""
         vim.wo[win].statusline = "  " .. name .. "%=drag this bar to resize  "
       end
@@ -265,32 +279,25 @@ vim.api.nvim_create_autocmd({ "FocusGained", "TermLeave", "BufEnter", "BufWriteP
 })
 
 -- Edits that happen while you sit in another pane (Claude writing files) fire none of the events
--- above, so `git status` is polled every 2 s and the tree / open files refresh when it changes.
--- Only in the IDE layout, only inside a git repo, and paused while Neovim is in the background
--- (FocusGained refreshes anyway). --no-optional-locks keeps it from fighting Claude's git over index.lock.
-local last_status, poll_timer
-local function poll()
-  local cwd = vim.uv.cwd()
-  if not vim.fs.root(cwd, ".git") then return end
-  vim.system({ "git", "--no-optional-locks", "status", "--porcelain" }, { cwd = cwd, text = true }, function(r)
-    if r.code ~= 0 or r.stdout == last_status then return end
-    local first = last_status == nil
-    last_status = r.stdout
-    if first then return end
-    vim.schedule(function()
+-- above, so the project folder is watched (one OS-level recursive watch, no polling) and open files /
+-- the tree refresh 300 ms after the last change. Inside .git only index / HEAD matter (stage, commit, checkout).
+-- Only in the IDE layout; `ide_active` also marks that session for saving.
+local ide_active, watcher = false, nil
+local watch_debounce = vim.uv.new_timer()
+local function start_watching()
+  if watcher then watcher:close() end
+  watcher = vim.uv.new_fs_event()
+  watcher:start(vim.fn.getcwd(), { recursive = true }, function(err, file)
+    if err then return end
+    file = (file or ""):gsub("\\", "/")
+    if file:match("^%.git/") and file ~= ".git/index" and file ~= ".git/HEAD" then return end
+    watch_debounce:start(300, 0, vim.schedule_wrap(function()
       vim.cmd("silent! checktime")
       refresh_tree()
-    end)
+    end))
   end)
 end
-local function start_polling()
-  if poll_timer then return end
-  poll_timer = vim.uv.new_timer()
-  poll_timer:start(2000, 2000, poll)
-  vim.api.nvim_create_autocmd("FocusLost", { callback = function() poll_timer:stop() end })
-  vim.api.nvim_create_autocmd("FocusGained", { callback = function() poll_timer:again() end })
-end
-vim.api.nvim_create_autocmd("DirChanged", { callback = function() last_status = nil end })
+vim.api.nvim_create_autocmd("DirChanged", { callback = function() if ide_active then start_watching() end end })
 
 -- New file / folder anywhere, like VS Code: Alt+n / Alt+Shift+n, :NewFile / :NewFolder, or right-click.
 -- The prompt starts in the folder under the tree cursor (else the current file's folder) and takes any
@@ -335,7 +342,7 @@ vim.cmd([[
 ]])
 
 -- Alt versions work in every mode, including while typing in the editor, Claude or opencode.
-for key, fn in pairs({ c = toggle_claude, e = toggle_editor, v = toggle_tree, o = toggle_opencode }) do
+for key, fn in pairs({ c = toggle_claude, e = toggle_editor, v = toggle_tree, o = toggle_opencode, t = toggle_shell }) do
   vim.keymap.set({ "n", "i", "t" }, "<A-" .. key .. ">", function()
     vim.cmd("stopinsert")
     fn()
@@ -375,7 +382,10 @@ local function restore_session()
 end
 
 local function start_workspace(restore)
-  start_polling()
+  if not ide_active then
+    ide_active = true
+    start_watching()
+  end
   if restore then restore_session() end
   Snacks.explorer()
   toggle_claude()
@@ -383,13 +393,19 @@ local function start_workspace(restore)
   if win then vim.api.nvim_set_current_win(win) end
 end
 
-vim.api.nvim_create_autocmd("VimLeavePre", { callback = function() if poll_timer then save_session() end end })
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  callback = function()
+    if not ide_active then return end
+    save_session()
+    if watcher then watcher:close() end
+  end,
+})
 
 -- Switch the whole workspace, like VS Code's Open Folder: tree, Claude and opencode restart in `dir`.
 local function open_folder(dir)
   dir = vim.fn.fnamemodify(vim.fn.expand(dir), ":p"):gsub("[/\\]$", "")
   if vim.fn.isdirectory(dir) == 0 then return vim.notify("Not a folder: " .. dir, vim.log.levels.ERROR) end
-  if poll_timer then save_session() end
+  if ide_active then save_session() end
   for _, p in ipairs(Snacks.picker.get({ source = "explorer" })) do p:close() end
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.bo[buf].buftype == "terminal" then
@@ -593,6 +609,7 @@ require("lazy").setup({
       { "<leader>fb", function() Snacks.picker.buffers() end, desc = "Buffers" },
       { "<leader>fr", function() Snacks.picker.recent() end, desc = "Recent files" },
       { "<leader>v", toggle_tree, desc = "Show / hide tree" },
+      { "<leader>t", toggle_shell, desc = "Show / hide shell" },
       { "<C-p>", function() Snacks.picker.smart() end, desc = "Go to file" },
       { "<leader>g", nil, desc = "Git" },
       { "<leader>gs", function() Snacks.picker.git_status() end, desc = "Changed files" },
@@ -683,13 +700,13 @@ require("lazy").setup({
   -- Never loaded: only its pinned grammar versions and highlight queries are used (see TS_LANGS below).
   { "nvim-treesitter/nvim-treesitter", branch = "main", lazy = true },
   { "neovim/nvim-lspconfig", lazy = true },
-  { "mason-org/mason.nvim", cmd = "Mason", opts = {} },
+  { "mason-org/mason.nvim", cmd = { "Mason", "MasonInstall", "MasonUpdate", "MasonUninstall" }, opts = {} },
   {
     -- Loaded with the first file, so the tree / Claude / picker never wait on LSP setup.
     "mason-org/mason-lspconfig.nvim",
     event = { "BufReadPre", "BufNewFile" },
     dependencies = { "mason-org/mason.nvim", "neovim/nvim-lspconfig" },
-    opts = { ensure_installed = { "pyright", "ts_ls", "lua_ls" } },
+    opts = { ensure_installed = { "pyright", "ruff", "ts_ls", "lua_ls" } },
   },
 }, {
   rocks = { enabled = false },
@@ -773,7 +790,42 @@ vim.api.nvim_create_user_command("TSBuild", function(cmd)
 end, { nargs = 1, complete = function() return TS_LANGS end, desc = "Build a treesitter parser with Zig" })
 
 vim.lsp.config("lua_ls", { settings = { Lua = { diagnostics = { globals = { "vim", "Snacks" } } } } })
+-- Python: pyright checks types, ruff lints / formats / sorts imports.
+vim.lsp.config("pyright", { settings = { pyright = { disableOrganizeImports = true } } })
+-- Dart / Flutter's own language server, once the SDK is on PATH.
+if vim.fn.executable("dart") == 1 then vim.lsp.enable("dartls") end
 vim.diagnostic.config({ virtual_text = true, severity_sort = true })
+
+-- Format on save (autosave included) with formatters every project of that language uses. lua_ls / ts_ls are
+-- left out: they'd restyle whole existing files. \lf still formats with any server; :FormatToggle turns this off.
+local FORMAT_ON_SAVE = { ruff = true, dartls = true }
+vim.api.nvim_create_autocmd("BufWritePre", {
+  callback = function(ev)
+    if vim.g.format_on_save == false then return end
+    if #vim.lsp.get_clients({ bufnr = ev.buf, method = "textDocument/formatting" }) == 0 then return end
+    vim.lsp.buf.format({ bufnr = ev.buf, timeout_ms = 1000, filter = function(c) return FORMAT_ON_SAVE[c.name] end })
+  end,
+})
+vim.api.nvim_create_user_command("FormatToggle", function()
+  vim.g.format_on_save = vim.g.format_on_save == false
+  vim.notify("Format on save " .. (vim.g.format_on_save and "on" or "off"))
+end, { desc = "Turn format on save on / off" })
+
+-- Completion menu: Tab / Shift+Tab move through it (or jump between snippet fields), Enter accepts a choice.
+vim.keymap.set({ "i", "s" }, "<Tab>", function()
+  if vim.fn.pumvisible() == 1 then return "<C-n>" end
+  if vim.snippet.active({ direction = 1 }) then return "<Cmd>lua vim.snippet.jump(1)<CR>" end
+  return "<Tab>"
+end, { expr = true, desc = "Next completion / snippet field" })
+vim.keymap.set({ "i", "s" }, "<S-Tab>", function()
+  if vim.fn.pumvisible() == 1 then return "<C-p>" end
+  if vim.snippet.active({ direction = -1 }) then return "<Cmd>lua vim.snippet.jump(-1)<CR>" end
+  return "<S-Tab>"
+end, { expr = true, desc = "Previous completion / snippet field" })
+vim.keymap.set("i", "<CR>", function()
+  if vim.fn.pumvisible() == 1 and vim.fn.complete_info({ "selected" }).selected ~= -1 then return "<C-y>" end
+  return "<CR>"
+end, { expr = true, desc = "Accept completion or new line" })
 
 vim.api.nvim_create_autocmd("LspAttach", {
   callback = function(ev)
@@ -781,6 +833,7 @@ vim.api.nvim_create_autocmd("LspAttach", {
     if client and client:supports_method("textDocument/completion") then
       vim.lsp.completion.enable(true, client.id, ev.buf, { autotrigger = true })
     end
+    if client and client.name == "ruff" then client.server_capabilities.hoverProvider = false end -- pyright's hover is richer
     local map = function(lhs, rhs, desc) vim.keymap.set("n", lhs, rhs, { buffer = ev.buf, desc = desc }) end
     map("gd", vim.lsp.buf.definition, "Go to definition")
     map("<leader>la", vim.lsp.buf.code_action, "Code action")

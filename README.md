@@ -12,6 +12,7 @@ Leader is `\`, so Space never waits on a shortcut.
 | `Alt+e` | Show / hide editor |
 | `Alt+c` | Show / hide Claude |
 | `Alt+o` | Show / hide opencode |
+| `Alt+t` / `\t` | Show / hide a PowerShell under the editor |
 | `Alt+h/j/k/l` | Move between panes (works in every mode) |
 | `Ctrl+V` | Paste system clipboard (in the Claude pane: text or image, whichever was copied) |
 | `Alt+V` | In the Claude pane: paste image (toggles the tree everywhere else) |
@@ -21,14 +22,15 @@ Leader is `\`, so Space never waits on a shortcut.
 | `Ctrl+P` | Go to file |
 | `\gs` `\gd` `\gl` `\gb` `\go` | Git: changed files, changed lines, file history, blame line, open on GitHub |
 | `\x` / `\ls` / `\u` | Problems / symbols / undo history |
+| `Tab` / `Shift+Tab` / `Enter` | Completion menu: next / previous / accept (Tab also jumps snippet fields) |
 
 Press `\` and wait to see the rest (which-key).
 
-Each folder remembers its open files and reopens them. Files save themselves when you leave them or switch away from Neovim, so Claude always reads what you see.
+Each folder remembers its open files and reopens them. Files save themselves when you leave them or switch away from Neovim, so Claude always reads what you see. Python (ruff) and Dart (`dart format`, once the SDK is on PATH) are formatted on save; `:FormatToggle` turns that off. Files changed outside Neovim reload on their own through a folder watcher, with no polling.
 
 ## Plugins
 
-lazy.nvim (bootstraps itself), snacks.nvim (explorer, terminals, inline images), claudecode.nvim, bufferline, which-key, base16 (Black Metal theme), nvim-lspconfig + mason (pyright, ts_ls, lua_ls), render-markdown, and jupytext + molten for notebooks. Versions are pinned in `lazy-lock.json`.
+lazy.nvim (bootstraps itself), snacks.nvim (explorer, terminals, inline images), claudecode.nvim, bufferline, which-key, base16 (Black Metal theme), nvim-lspconfig + mason (pyright, ruff, ts_ls, lua_ls; dartls when Dart is installed), render-markdown, and jupytext + molten for notebooks. Versions are pinned in `lazy-lock.json`.
 
 ## Requirements
 
