@@ -15,7 +15,7 @@ Leader is `\`, so Space never waits on a shortcut.
 | `Alt+t` / `\t` | Show / hide a PowerShell under the editor |
 | `Alt+h/j/k/l` | Move between panes (works in every mode) |
 | `Ctrl+V` | Paste system clipboard (in the Claude pane: text or image, whichever was copied) |
-| `Alt+V` | In the Claude pane: paste image (toggles the tree everywhere else) |
+| `Alt+Shift+V` | In the Claude pane: force an image paste (`Ctrl+V` normally detects it) |
 | `\w` / `\q` / `Ctrl+S` | Save / quit window / save |
 | `Alt+f` | Open folder: recent, `D:/Codes`, a folder browser, new folder / file, or type any path |
 | In the folder browser | `Enter` go into a folder · `Backspace` up (drives above a root) · `Ctrl+O` open as workspace · type to filter |
@@ -27,7 +27,7 @@ Leader is `\`, so Space never waits on a shortcut.
 
 Press `\` and wait to see the rest (which-key).
 
-Each folder remembers its open files and reopens them. Files save themselves when you leave them or switch away from Neovim, so Claude always reads what you see. Python (ruff) and Dart (`dart format`, once the SDK is on PATH) are formatted on save; `:FormatToggle` turns that off. Files changed outside Neovim reload on their own through a folder watcher, with no polling.
+Each folder remembers its open files and reopens them. Files save themselves when you leave them or switch away from Neovim, so Claude always reads what you see. Python (ruff) and Dart (`dart format`, once the SDK is on PATH) are formatted on save; `:FormatToggle` turns that off. Files changed outside Neovim reload on their own through a folder watcher, with no polling; files deleted outside close their tab (unless you have unsaved changes). Files Neovim can't show (archives, Office docs, audio, fonts, executables, and images other than PNG unless ImageMagick is installed) open in their Windows app instead.
 
 ## Plugins
 

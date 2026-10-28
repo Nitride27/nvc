@@ -67,7 +67,8 @@ vim.api.nvim_create_autocmd("TermOpen", {
       local function send(keys) vim.fn.chansend(vim.b[ev.buf].terminal_job_id, keys) end
       vim.keymap.set("t", "<C-v>", function() send(clipboard_is_image() and "\27v" or "\22") end,
         { buffer = ev.buf, desc = "Paste text or image into Claude" })
-      vim.keymap.set("t", "<A-v>", function() send("\27v") end, { buffer = ev.buf, desc = "Paste image into Claude" })
+      -- Alt+Shift+V forces an image paste if detection guesses wrong (Alt+v stays the tree toggle here too).
+      vim.keymap.set("t", "<A-V>", function() send("\27v") end, { buffer = ev.buf, desc = "Paste image into Claude" })
     end
   end,
 })
@@ -102,6 +103,76 @@ vim.api.nvim_create_autocmd({ "BufLeave", "FocusLost" }, {
   end,
 })
 vim.keymap.set("n", "<leader>q", "<cmd>quit<cr>", { desc = "Quit window" })
+
+-- Files Neovim can't show open in their Windows app instead of as garbage. Snacks shows PNG inline; the other
+-- image / video / PDF formats need ImageMagick, so without `magick` they go to the app too.
+local HAS_MAGICK = vim.fn.executable("magick") == 1
+local IMAGE_FORMATS = HAS_MAGICK and { "png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "heic", "avif", "mp4", "mov", "avi", "mkv", "webm", "pdf", "icns" } or { "png" }
+local EXTERNAL = { "exe", "dll", "so", "lib", "obj", "o", "a", "pyc", "class", "jar", "zip", "7z", "rar", "gz", "tgz", "bz2", "xz",
+  "tar", "iso", "msi", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "mp3", "wav", "ogg", "flac", "m4a", "ttf", "otf", "woff",
+  "woff2", "psd", "blend", "fbx", "glb", "ico" }
+if not HAS_MAGICK then
+  vim.list_extend(EXTERNAL, { "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "heic", "avif", "mp4", "mov", "avi", "mkv", "webm", "pdf", "icns" })
+end
+vim.api.nvim_create_autocmd("BufReadCmd", {
+  pattern = vim.tbl_map(function(ext) return "*." .. ext end, EXTERNAL),
+  callback = function(ev)
+    local file = vim.fn.fnamemodify(ev.match, ":p")
+    vim.schedule(function()
+      vim.ui.open(file)
+      if vim.api.nvim_buf_is_valid(ev.buf) then Snacks.bufdelete({ buf = ev.buf, force = true }) end
+      vim.notify("Opened " .. vim.fn.fnamemodify(file, ":t") .. " in its app")
+    end)
+  end,
+})
+
+-- An empty, unnamed, unchanged buffer: the "[No Name]" Neovim keeps around. It never shows as a tab and is
+-- wiped as soon as a real file is open and nothing displays it.
+local function is_blank(buf)
+  return vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == "" and vim.api.nvim_buf_get_name(buf) == ""
+    and not vim.bo[buf].modified and vim.api.nvim_buf_line_count(buf) == 1 and vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] == ""
+end
+vim.api.nvim_create_autocmd("BufEnter", {
+  callback = function(ev)
+    if vim.bo[ev.buf].buftype ~= "" or vim.api.nvim_buf_get_name(ev.buf) == "" then return end
+    vim.schedule(function()
+      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+        if is_blank(buf) and #vim.fn.win_findbuf(buf) == 0 then pcall(vim.api.nvim_buf_delete, buf, {}) end
+      end
+    end)
+  end,
+})
+
+-- A file deleted on disk (Claude, git checkout) closes its tab if you hadn't changed it; otherwise it stays open
+-- with a warning so you can save it again. Other outside changes reload as usual (autoread), or ask on a conflict.
+vim.api.nvim_create_autocmd("FileChangedShell", {
+  callback = function(ev)
+    local reason = vim.v.fcs_reason
+    if reason == "deleted" then
+      vim.v.fcs_choice = ""
+      local name = vim.fn.fnamemodify(ev.match, ":~:.")
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(ev.buf) then return end
+        if vim.bo[ev.buf].modified then return vim.notify(name .. " was deleted; :w saves it again", vim.log.levels.WARN) end
+        Snacks.bufdelete(ev.buf)
+        vim.notify(name .. " was deleted; closed it")
+      end)
+    else
+      vim.v.fcs_choice = reason == "conflict" and "ask" or "reload"
+    end
+  end,
+})
+-- Neovim only checks the file of a visible buffer, so tabs in the background are swept for deleted files too
+-- (called from the folder watcher and on focus).
+local function close_deleted_tabs()
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.api.nvim_buf_get_name(buf)
+    if vim.bo[buf].buflisted and vim.bo[buf].buftype == "" and name ~= "" and not vim.bo[buf].modified
+      and #vim.fn.win_findbuf(buf) == 0 and vim.api.nvim_buf_is_loaded(buf) and not vim.uv.fs_stat(name) then
+      Snacks.bufdelete(buf)
+    end
+  end
+end
 
 -- Layout: file tree (left) · editor (middle, can be closed) · Claude / opencode (right).
 local TREE_WIDTH = 40
@@ -174,8 +245,15 @@ vim.api.nvim_create_autocmd("VimResized", { callback = function() fix_widths(#ed
 local function ensure_editor()
   local wins = editor_wins()
   if #wins > 0 then return wins[1] end
-  local buf = last_editor_buf and vim.api.nvim_buf_is_valid(last_editor_buf) and last_editor_buf
-    or vim.api.nvim_create_buf(true, false)
+  -- The last file you were on if it's still open (a closed tab stays "valid" but unlisted), else a blank
+  -- unlisted buffer, so no extra "[No Name]" tab appears.
+  local buf = last_editor_buf and vim.api.nvim_buf_is_valid(last_editor_buf) and vim.bo[last_editor_buf].buflisted and last_editor_buf
+  if not buf then
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if is_blank(b) then buf = b break end
+    end
+  end
+  buf = buf or vim.api.nvim_create_buf(false, false)
   -- A full-height column right of the tree (or leftmost), never inside the Claude / opencode stack.
   local tree
   for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
@@ -194,6 +272,15 @@ local function toggle_editor()
   if #non_float == #wins then return vim.notify("Open the tree or Claude first; the editor is the only window") end
   for _, win in ipairs(wins) do vim.api.nvim_win_close(win, false) end
   fix_widths(false)
+end
+
+-- File pickers open their pick in the editor. Snacks falls back to any window when the editor is closed,
+-- which would put the file in Claude's pane, so the editor is reopened first.
+local function with_editor(fn)
+  return function()
+    if #editor_wins() == 0 then ensure_editor() end
+    fn()
+  end
 end
 
 local function toggle_tree() Snacks.explorer() end
@@ -273,6 +360,7 @@ vim.api.nvim_create_autocmd({ "FocusGained", "TermLeave", "BufEnter", "BufWriteP
     refresh_pending = true
     vim.defer_fn(function()
       refresh_pending = false
+      close_deleted_tabs()
       refresh_tree()
     end, 200)
   end,
@@ -293,6 +381,7 @@ local function start_watching()
     if file:match("^%.git/") and file ~= ".git/index" and file ~= ".git/HEAD" then return end
     watch_debounce:start(300, 0, vim.schedule_wrap(function()
       vim.cmd("silent! checktime")
+      close_deleted_tabs()
       refresh_tree()
     end))
   end)
@@ -654,7 +743,7 @@ require("lazy").setup({
     opts = {
       explorer = {},
       bigfile = {}, -- files over 1.5 MB (big JSON, logs) open without LSP / treesitter / syntax
-      image = {}, -- inline images (notebook plots) via Ghostty's graphics protocol
+      image = { formats = IMAGE_FORMATS }, -- inline images (notebook plots, .png files) via the kitty graphics protocol
       terminal = {},
       input = {},
       notifier = {},
@@ -676,7 +765,15 @@ require("lazy").setup({
                 return require("snacks.explorer.actions").actions.confirm(picker, item, action)
               end,
             },
-            win = { list = { keys = { ["<CR>"] = "open_in_editor", ["l"] = "open_in_editor", ["<2-LeftMouse>"] = "open_in_editor", ["O"] = "open_as_workspace" } } },
+            -- Snacks' own Alt+h / Alt+f / Alt+w (hidden, follow, cycle window) are turned off here so the global
+            -- pane move / open folder / close tab keys work in the tree too. H and I still toggle hidden / ignored.
+            win = {
+              list = { keys = {
+                ["<CR>"] = "open_in_editor", ["l"] = "open_in_editor", ["<2-LeftMouse>"] = "open_in_editor", ["O"] = "open_as_workspace",
+                ["<a-h>"] = false, ["<a-f>"] = false, ["<a-w>"] = false,
+              } },
+              input = { keys = { ["<a-h>"] = false, ["<a-f>"] = false, ["<a-w>"] = false } },
+            },
           },
         },
       },
@@ -684,23 +781,23 @@ require("lazy").setup({
     keys = {
       { "<leader>e", toggle_editor, desc = "Show / hide editor" },
       { "<leader>o", toggle_opencode, desc = "Show / hide opencode" },
-      { "<leader>ff", function() Snacks.picker.files() end, desc = "Find files" },
+      { "<leader>ff", with_editor(function() Snacks.picker.files() end), desc = "Find files" },
       { "<leader>p", pick_folder, desc = "Open folder" },
-      { "<leader>/", function() Snacks.picker.grep() end, desc = "Search text" },
-      { "<leader>fb", function() Snacks.picker.buffers() end, desc = "Buffers" },
-      { "<leader>fr", function() Snacks.picker.recent() end, desc = "Recent files" },
+      { "<leader>/", with_editor(function() Snacks.picker.grep() end), desc = "Search text" },
+      { "<leader>fb", with_editor(function() Snacks.picker.buffers() end), desc = "Buffers" },
+      { "<leader>fr", with_editor(function() Snacks.picker.recent() end), desc = "Recent files" },
       { "<leader>v", toggle_tree, desc = "Show / hide tree" },
       { "<leader>t", toggle_shell, desc = "Show / hide shell" },
-      { "<C-p>", function() Snacks.picker.smart() end, desc = "Go to file" },
+      { "<C-p>", with_editor(function() Snacks.picker.smart() end), desc = "Go to file" },
       { "<leader>g", nil, desc = "Git" },
-      { "<leader>gs", function() Snacks.picker.git_status() end, desc = "Changed files" },
-      { "<leader>gd", function() Snacks.picker.git_diff() end, desc = "Changed lines (hunks)" },
+      { "<leader>gs", with_editor(function() Snacks.picker.git_status() end), desc = "Changed files" },
+      { "<leader>gd", with_editor(function() Snacks.picker.git_diff() end), desc = "Changed lines (hunks)" },
       { "<leader>gl", function() Snacks.picker.git_log_file() end, desc = "History of this file" },
       { "<leader>gb", function() Snacks.git.blame_line() end, desc = "Blame this line" },
       { "<leader>go", function() Snacks.gitbrowse() end, desc = "Open on GitHub" },
-      { "<leader>x", function() Snacks.picker.diagnostics() end, desc = "Problems (all files)" },
+      { "<leader>x", with_editor(function() Snacks.picker.diagnostics() end), desc = "Problems (all files)" },
       { "<leader>ls", function() Snacks.picker.lsp_symbols() end, desc = "Symbols in file" },
-      { "<leader>lS", function() Snacks.picker.lsp_workspace_symbols() end, desc = "Symbols in project" },
+      { "<leader>lS", with_editor(function() Snacks.picker.lsp_workspace_symbols() end), desc = "Symbols in project" },
       { "<leader>u", function() Snacks.picker.undo() end, desc = "Undo history" },
     },
   },
@@ -737,7 +834,7 @@ require("lazy").setup({
       options = {
         close_command = function(buf) Snacks.bufdelete(buf) end,
         middle_mouse_command = function(buf) Snacks.bufdelete(buf) end,
-        custom_filter = function(buf) return vim.bo[buf].buftype == "" end,
+        custom_filter = function(buf) return vim.bo[buf].buftype == "" and not is_blank(buf) end, -- no "[No Name]" tabs
         offsets = { { filetype = "snacks_layout_box", text = "Explorer", separator = true } },
         always_show_bufferline = true,
       },
