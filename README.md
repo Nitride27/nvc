@@ -17,7 +17,8 @@ Leader is `\`, so Space never waits on a shortcut.
 | `Ctrl+V` | Paste system clipboard (in the Claude pane: text or image, whichever was copied) |
 | `Alt+V` | In the Claude pane: paste image (toggles the tree everywhere else) |
 | `\w` / `\q` / `Ctrl+S` | Save / quit window / save |
-| `Alt+f` | Open folder: recent, `D:/Codes`, browse anywhere, new folder / file, or type any path |
+| `Alt+f` | Open folder: recent, `D:/Codes`, a folder browser, new folder / file, or type any path |
+| In the folder browser | `Enter` go into a folder · `Backspace` up (drives above a root) · `Ctrl+O` open as workspace · type to filter |
 | `Alt+n` / `Alt+Shift+n` | New file / folder |
 | `Ctrl+P` | Go to file |
 | `\gs` `\gd` `\gl` `\gb` `\go` | Git: changed files, changed lines, file history, blame line, open on GitHub |

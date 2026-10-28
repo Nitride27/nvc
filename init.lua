@@ -404,6 +404,7 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
 -- Switch the whole workspace, like VS Code's Open Folder: tree, Claude and opencode restart in `dir`.
 local function open_folder(dir)
   dir = vim.fn.fnamemodify(vim.fn.expand(dir), ":p"):gsub("[/\\]$", "")
+  if dir:match("^%a:$") then dir = dir .. "/" end -- a bare "C:" would mean that drive's last folder, not its root
   if vim.fn.isdirectory(dir) == 0 then return vim.notify("Not a folder: " .. dir, vim.log.levels.ERROR) end
   if ide_active then save_session() end
   for _, p in ipairs(Snacks.picker.get({ source = "explorer" })) do p:close() end
@@ -461,6 +462,83 @@ local function open_or_create_folder(dir)
   open_folder(dir)
 end
 
+-- Creates `name` inside `parent` and opens it as the workspace.
+local function new_folder_in(parent)
+  Snacks.input({ prompt = "New folder in " .. parent }, function(name)
+    name = vim.trim(name or "")
+    if name == "" then return end
+    local dir = parent:gsub("/$", "") .. "/" .. name
+    if vim.uv.fs_stat(dir) then return vim.notify("Already exists: " .. dir, vim.log.levels.WARN) end
+    vim.fn.mkdir(dir, "p")
+    open_folder(dir)
+  end)
+end
+
+-- Folder browser, no typing paths: Enter goes into a folder, Backspace (empty search) goes up, Ctrl+O opens the
+-- highlighted folder (or the one you're in) as the workspace. Typing filters the list. Above a drive root: drives.
+local function browse_folder(dir)
+  local items, parent = {}, nil
+  if dir then
+    dir = vim.fs.normalize(dir)
+    parent = vim.fs.dirname(dir)
+    if parent == dir then parent = nil end -- at a drive root, "up" lists the drives
+    items[#items + 1] = { text = "Open this folder", path = dir, kind = "open" }
+    items[#items + 1] = { text = "New folder here…", path = dir, kind = "new" }
+    items[#items + 1] = { text = "..", path = parent, kind = "up" }
+    local subs = {}
+    pcall(function() -- unreadable folders (permissions, broken junctions) just list nothing
+      for name, kind in vim.fs.dir(dir) do
+        if kind == "directory" and not name:match("^%$") and name ~= "System Volume Information" then subs[#subs + 1] = name end
+      end
+    end)
+    table.sort(subs, function(a, b) return a:lower() < b:lower() end)
+    for _, name in ipairs(subs) do
+      local path = dir:gsub("/$", "") .. "/" .. name
+      items[#items + 1] = { text = name, file = path, path = path, dir = true, kind = "dir" }
+    end
+  else
+    for letter in ("CDEFGHIJKLMNOPQRSTUVWXYZ"):gmatch(".") do
+      if vim.uv.fs_stat(letter .. ":/") then items[#items + 1] = { text = letter .. ":/", file = letter .. ":/", path = letter .. ":/", dir = true, kind = "dir" } end
+    end
+  end
+  local function reopen(fn) return function(picker, ...) picker:close() local args = { ... } vim.schedule(function() fn(unpack(args)) end) end end
+  local picker_ref
+  picker_ref = Snacks.picker.pick({
+    title = dir or "Drives",
+    items = items,
+    format = function(item, picker)
+      if item.kind ~= "dir" then return { { "  " .. item.text, "Special" } } end
+      return Snacks.picker.format.file(item, picker)
+    end,
+    preview = "none",
+    layout = { preset = "select" },
+    confirm = reopen(function(item)
+      if not item then return end
+      if item.kind == "open" then return open_folder(item.path) end
+      if item.kind == "new" then return new_folder_in(item.path) end
+      browse_folder(item.path) -- "..", a subfolder or a drive
+    end),
+    actions = {
+      open_selected = reopen(function(item)
+        local target = item and item.kind == "dir" and item.path or dir
+        if target then open_folder(target) end
+      end),
+    },
+    win = { input = { keys = {
+      ["<C-o>"] = { "open_selected", mode = { "i", "n" } },
+      -- expr map: with search text it's a normal Backspace; on an empty search it goes up a folder.
+      ["<BS>"] = { function()
+        if vim.api.nvim_get_current_line() ~= "" or not dir then return "<BS>" end
+        vim.schedule(function()
+          if picker_ref then picker_ref:close() end
+          browse_folder(parent)
+        end)
+        return ""
+      end, mode = { "i", "n" }, expr = true },
+    } } },
+  })
+end
+
 local function pick_actions()
   local home, cwd = vim.fs.normalize(vim.env.HOME), vim.fs.normalize(vim.fn.getcwd())
   local items = {}
@@ -468,12 +546,8 @@ local function pick_actions()
     items[1] = { text = "Here (" .. cwd .. ")", action = function() open_folder(cwd) end }
   end
   return vim.list_extend(items, {
-    { text = "Browse any folder…", action = function()
-      ask_path("Open folder", vim.fs.normalize(vim.fn.getcwd()) .. "/", "dir", open_or_create_folder)
-    end },
-    { text = "New folder…", action = function()
-      ask_path("New folder", PROJECTS_DIR .. "/", "dir", open_or_create_folder)
-    end },
+    { text = "Browse folders…", action = function() browse_folder(cwd) end },
+    { text = "New folder in " .. PROJECTS_DIR .. "…", action = function() new_folder_in(PROJECTS_DIR) end },
     { text = "New file…", action = function()
       ask_path("New file", PROJECTS_DIR .. "/", "file", function(path)
         if vim.fn.isdirectory(path) == 1 then return open_folder(path) end
