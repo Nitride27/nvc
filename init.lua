@@ -462,8 +462,12 @@ local function open_or_create_folder(dir)
 end
 
 local function pick_actions()
-  local home = vim.fs.normalize(vim.env.HOME)
-  return {
+  local home, cwd = vim.fs.normalize(vim.env.HOME), vim.fs.normalize(vim.fn.getcwd())
+  local items = {}
+  if cwd ~= home then
+    items[1] = { text = "Here (" .. cwd .. ")", action = function() open_folder(cwd) end }
+  end
+  return vim.list_extend(items, {
     { text = "Browse any folder…", action = function()
       ask_path("Open folder", vim.fs.normalize(vim.fn.getcwd()) .. "/", "dir", open_or_create_folder)
     end },
@@ -481,7 +485,7 @@ local function pick_actions()
       end)
     end },
     { text = "Home (" .. home .. ")", action = function() open_folder(home) end },
-  }
+  })
 end
 
 local function pick_folder()
@@ -532,10 +536,13 @@ vim.keymap.set({ "n", "i", "t" }, "<A-f>", function()
 end, { desc = "Open folder" })
 
 -- In $HOME, choose a project first instead of starting Claude in the home folder.
-vim.api.nvim_create_user_command("IDE", function()
-  if vim.fn.getcwd() == vim.env.HOME then return pick_folder() end
-  start_workspace(vim.fn.argc() == 0) -- `nvc file.py` opens just that file; plain `nvc` brings back the last files
-end, { desc = "Open tree + editor + Claude" })
+-- Plain `nvc` always asks which folder (the shell's folder is often just wherever the last one left it).
+-- `nvc <dir>` runs `:IDE .` and opens that folder with its last files; `nvc file.py` opens just that file here.
+vim.api.nvim_create_user_command("IDE", function(cmd)
+  if vim.fn.argc() > 0 then return start_workspace(false) end
+  if cmd.args ~= "" then return open_folder(cmd.args) end
+  pick_folder()
+end, { nargs = "?", complete = "dir", desc = "Open tree + editor + Claude (asks for a folder without one)" })
 
 -- VS Code's git colours for file names in the tree (the theme's defaults are near-invisible on black).
 vim.api.nvim_create_autocmd("ColorScheme", {
