@@ -14,6 +14,11 @@ c.font = wezterm.font("JetBrainsMono Nerd Font")
 -- Default 12pt zoomed out one step (Ctrl+-), measured as a 13x29px cell at 144 dpi.
 c.font_size = 12 / 1.1
 c.scrollback_lines = 50000
+-- WebGPU (DX12) renders faster than the default OpenGL on Windows; LowPower keeps it on the iGPU, not the dGPU.
+c.front_end = "WebGpu"
+c.webgpu_power_preference = "LowPower"
+c.max_fps = 165 -- the panel's refresh rate (default 60)
+c.animation_fps = 1 -- no eased cursor/visual-bell animations to redraw
 c.enable_kitty_graphics = true
 c.color_scheme = "Black Metal (base16)"
 c.window_padding = { left = 12, right = 12, top = 10, bottom = 6 }

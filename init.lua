@@ -970,8 +970,13 @@ end, { nargs = 1, complete = function() return TS_LANGS end, desc = "Build a tre
 vim.lsp.config("lua_ls", { settings = { Lua = { diagnostics = { globals = { "vim", "Snacks" } } } } })
 -- Python: pyright checks types, ruff lints / formats / sorts imports.
 vim.lsp.config("pyright", { settings = { pyright = { disableOrganizeImports = true } } })
--- Dart / Flutter's own language server, once the SDK is on PATH.
-if vim.fn.executable("dart") == 1 then vim.lsp.enable("dartls") end
+-- Dart / Flutter's own language server, once the SDK is on PATH. Checked on the first Dart file, not at
+-- startup: the PATH lookup alone costs ~7 ms.
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "dart",
+  once = true,
+  callback = function() if vim.fn.executable("dart") == 1 then vim.lsp.enable("dartls") end end,
+})
 vim.diagnostic.config({ virtual_text = true, severity_sort = true })
 
 -- Format on save (autosave included) with formatters every project of that language uses. lua_ls / ts_ls are
